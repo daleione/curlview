@@ -1,6 +1,6 @@
 [package]
 name = "curlview"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["dalei <guoyunlei@live.com>"]
 description = "A Rust-powered HTTP performance analyzer that visualizes curl timing metrics in a human-readable format."

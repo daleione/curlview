@@ -288,26 +288,43 @@ fn print_timing_chart(m: &CurlMetrics, https: bool) {
         println!(
             r#"
   DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer
-┌─────────────┬───────────────┬──────────────┬────────────────────┬─────────────────┐
-│ {:^11} │ {:^13} │ {:^12} │ {:^18} │ {:^15} │
-└─────────────┴───────────────┴──────────────┴────────────────────┴─────────────────┘"#,
+[{:^12}|{:^16}|{:^15}|{:^19}|{:^18}]
+             |                |               |                   |                  |
+   namelookup:{:>8}        |               |                   |                  |
+                       connect:{:>8}       |                   |                  |
+                                   pretransfer:{:>8}           |                  |
+                                                     starttransfer:{:>8}          |
+                                                                                total:{:>8}"#,
             format!("{dns}ms").cyan(),
             format!("{connect}ms").cyan(),
             format!("{ssl}ms").cyan(),
             format!("{server}ms").cyan(),
-            format!("{transfer}ms").cyan()
+            format!("{transfer}ms").cyan(),
+            format!("{:.2}ms", m.time_namelookup * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_connect * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_pretransfer * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_starttransfer * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_total * 1000.0).cyan(),
         );
     } else {
         println!(
             r#"
-  DNS Lookup   TCP Connection   Server Processing   Content Transfer
-┌─────────────┬───────────────┬────────────────────┬─────────────────┐
-│ {:^11} │ {:^13} │ {:^18} │ {:^15} │
-└─────────────┴───────────────┴────────────────────┴─────────────────┘"#,
+   DNS Lookup   TCP Connection   Server Processing   Content Transfer
+[{:^13}|{:^16}|{:^19}|{:^18}]
+              |                |                   |                  |
+    namelookup:{:>8}        |                   |                  |
+                        connect:{:>8}           |                  |
+                                      starttransfer:{:>8}          |
+                                                                 total:{:>8}"#,
             format!("{dns}ms").cyan(),
             format!("{connect}ms").cyan(),
             format!("{server}ms").cyan(),
-            format!("{transfer}ms").cyan()
+            format!("{transfer}ms").cyan(),
+            format!("{:.2}ms", m.time_namelookup * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_connect * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_starttransfer * 1000.0).cyan(),
+            format!("{:.2}ms", m.time_total * 1000.0).cyan(),
         );
     }
 }
+
