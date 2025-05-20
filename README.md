@@ -2,6 +2,8 @@
 
 A modern Rust-based HTTP performance analyzer powered by curl. It visualizes timing metrics such as DNS lookup, TCP connection, TLS handshake, server processing, and content transfer in a human-readable format — similar to httpstat, but written in Rust.
 
+![screenshot](screenshot.png)
+
 ## Features
 
 - Visualize HTTP timing breakdowns
