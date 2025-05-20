@@ -2,6 +2,9 @@
 name = "curlview"
 version = "0.1.0"
 edition = "2024"
+authors = ["dalei <guoyunlei@live.com>"]
+description = "A Rust-powered HTTP performance analyzer that visualizes curl timing metrics in a human-readable format."
+license = "MIT"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

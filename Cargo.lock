@@ -34,6 +34,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "curlview"
+version = "0.1.0"
+dependencies = [
+ "colored",
+ "lazy_static",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -59,18 +71,6 @@ dependencies = [
  "libc",
  "r-efi",
  "wasi",
-]
-
-[[package]]
-name = "curlview"
-version = "0.1.0"
-dependencies = [
- "colored",
- "lazy_static",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
