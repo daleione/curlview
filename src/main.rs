@@ -24,14 +24,42 @@ struct CurlMetrics {
     local_port: u16,
 }
 
-fn getenv_bool(key: &str, default: bool) -> bool {
-    env::var(key)
-        .map(|v| v.to_lowercase() == "true")
-        .unwrap_or(default)
+#[derive(Debug)]
+struct Config {
+    show_body: bool,
+    show_ip: bool,
+    show_speed: bool,
+    save_body: bool,
+    curl_bin: String,
+    debug: bool,
+    timeout_secs: u64,
 }
 
-fn getenv_str(key: &str, default: &str) -> String {
-    env::var(key).unwrap_or(default.to_string())
+impl Config {
+    fn from_env() -> Self {
+        fn getenv_bool(key: &str, default: bool) -> bool {
+            env::var(key)
+                .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+                .unwrap_or(default)
+        }
+
+        fn getenv_u64(key: &str, default: u64) -> u64 {
+            env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        }
+
+        Self {
+            show_body: getenv_bool("HTTPSTAT_SHOW_BODY", false),
+            show_ip: getenv_bool("HTTPSTAT_SHOW_IP", true),
+            show_speed: getenv_bool("HTTPSTAT_SHOW_SPEED", false),
+            save_body: getenv_bool("HTTPSTAT_SAVE_BODY", true),
+            curl_bin: env::var("HTTPSTAT_CURL_BIN").unwrap_or_else(|_| "curl".to_string()),
+            debug: getenv_bool("HTTPSTAT_DEBUG", false),
+            timeout_secs: getenv_u64("HTTPSTAT_TIMEOUT", 10),
+        }
+    }
 }
 
 fn main() -> io::Result<()> {
@@ -41,25 +69,67 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let show_body = getenv_bool("HTTPSTAT_SHOW_BODY", false);
-    let show_ip = getenv_bool("HTTPSTAT_SHOW_IP", true);
-    let show_speed = getenv_bool("HTTPSTAT_SHOW_SPEED", false);
-    let save_body = getenv_bool("HTTPSTAT_SAVE_BODY", true);
-    let curl_bin = getenv_str("HTTPSTAT_CURL_BIN", "curl");
-    let metrics_only = getenv_bool("HTTPSTAT_METRICS_ONLY", false);
-    let debug = getenv_bool("HTTPSTAT_DEBUG", false);
-
+    let config = Config::from_env();
     let url = &args[1];
     let extra_args = &args[2..];
 
-    let excluded_flags = ["-w", "-D", "-o", "-s", "--write-out", "--dump-header", "--output", "--silent"];
-    for flag in excluded_flags {
-        if extra_args.contains(&flag.to_string()) {
-            eprintln!("{}", format!("Error: {} is not allowed", flag).yellow());
-            std::process::exit(1);
-        }
-    }
+    validate_extra_args(extra_args)?;
 
+    let (_header_file, _body_file) = execute_curl(&config, url, extra_args)?;
+
+    Ok(())
+}
+
+fn print_help() {
+    println!(
+        "{}",
+        r#"
+Usage: httpstat URL [CURL_OPTIONS]
+Options:
+  -h, --help      Show this help
+  --version       Show version
+
+Env Options:
+  HTTPSTAT_SHOW_BODY=true       Show response body
+  HTTPSTAT_SHOW_IP=false        Disable IP info
+  HTTPSTAT_SHOW_SPEED=true      Show speed
+  HTTPSTAT_SAVE_BODY=false      Don't save body
+  HTTPSTAT_CURL_BIN=/my/curl    Use custom curl
+  HTTPSTAT_DEBUG=true           Enable debug log
+"#
+        .bright_blue()
+    );
+}
+
+fn validate_extra_args(extra_args: &[String]) -> io::Result<()> {
+    let excluded_flags = [
+        "-w",
+        "-D",
+        "-o",
+        "-s",
+        "--write-out",
+        "--dump-header",
+        "--output",
+        "--silent",
+    ];
+    if extra_args.iter().any(|arg| {
+        excluded_flags
+            .iter()
+            .any(|&flag| arg == flag || arg.starts_with(&format!("{}=", flag)))
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Error: One or more disallowed flags used",
+        ));
+    }
+    Ok(())
+}
+
+fn execute_curl(
+    config: &Config,
+    url: &str,
+    extra_args: &[String],
+) -> io::Result<(NamedTempFile, NamedTempFile)> {
     let curl_format = r#"{
         "time_namelookup": %{time_namelookup},
         "time_connect": %{time_connect},
@@ -79,55 +149,104 @@ fn main() -> io::Result<()> {
     let header_file = NamedTempFile::new()?;
     let body_file = NamedTempFile::new()?;
 
-    let mut cmd = Command::new(curl_bin);
+    let mut cmd = Command::new(&config.curl_bin);
     cmd.arg("-w")
         .arg(curl_format)
         .arg("-D")
         .arg(header_file.path())
         .arg("-o")
         .arg(body_file.path())
-        .arg("-s")
-        .arg("-S")
+        .arg("-sS")
+        .arg("--max-time")
+        .arg(config.timeout_secs.to_string())
         .args(extra_args)
         .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    if debug {
-        println!("Executing: {:?}", cmd);
+    if config.debug {
+        println!("{} {:?}", "Executing:".bright_blue(), cmd);
     }
 
     let output = cmd.output()?;
 
+    handle_curl_output(config, output, &header_file, &body_file, url)?;
+    Ok((header_file, body_file))
+}
+
+fn handle_curl_output(
+    config: &Config,
+    output: std::process::Output,
+    header_file: &NamedTempFile,
+    body_file: &NamedTempFile,
+    url: &str,
+) -> io::Result<()> {
     if !output.status.success() {
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr).red());
-        std::process::exit(output.status.code().unwrap_or(1));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Curl error: {}", String::from_utf8_lossy(&output.stderr)),
+        ));
     }
 
     let stdout_str = String::from_utf8_lossy(&output.stdout);
     let metrics: CurlMetrics = serde_json::from_str(&stdout_str)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("JSON parse error: {}", e)))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("JSON error: {}", e)))?;
 
-    if show_ip {
+    print_connection_info(&metrics, config.show_ip);
+    print_headers(header_file)?;
+    handle_response_body(body_file, config.show_body, config.save_body)?;
+    print_timing_chart(&metrics, url_is_https(url));
+
+    if config.show_speed {
         println!(
-            "Connected to {}:{} from {}:{}",
-            metrics.remote_ip.cyan(),
-            metrics.remote_port.to_string().cyan(),
-            metrics.local_ip,
-            metrics.local_port
+            "{} {:.1} KiB/s, {} {:.1} KiB/s",
+            "Download:".bright_green(),
+            metrics.speed_download / 1024.0,
+            "Upload:".bright_green(),
+            metrics.speed_upload / 1024.0
         );
-        println!();
     }
 
-    if metrics_only {
-        println!("{}", serde_json::to_string_pretty(&metrics).unwrap());
-        return Ok(());
+    Ok(())
+}
+
+fn handle_response_body(
+    body_file: &NamedTempFile,
+    show_body: bool,
+    save_body: bool,
+) -> io::Result<()> {
+    let mut body_buf = String::new();
+    fs::File::open(body_file.path())?.read_to_string(&mut body_buf)?;
+
+    if show_body {
+        let truncated = if body_buf.len() > 1024 {
+            format!("{}{}", &body_buf[..1024], "...".cyan())
+        } else {
+            body_buf.clone()
+        };
+        println!("{}", truncated);
+    } else if save_body {
+        println!(
+            "{} stored in: {}",
+            "Body".green(),
+            body_file.path().display()
+        );
     }
 
-    // Headers
-    let mut header_buf = String::new();
-    fs::File::open(header_file.path())?.read_to_string(&mut header_buf)?;
-    for line in header_buf.lines() {
+    if !save_body {
+        let _ = fs::remove_file(body_file.path());
+    }
+    Ok(())
+}
+
+fn url_is_https(url: &str) -> bool {
+    url.starts_with("https://")
+}
+
+fn print_headers(header_file: &NamedTempFile) -> io::Result<()> {
+    let mut headers = String::new();
+    fs::File::open(header_file.path())?.read_to_string(&mut headers)?;
+    for line in headers.lines() {
         if let Some(idx) = line.find(':') {
             println!(
                 "{}{}",
@@ -138,40 +257,30 @@ fn main() -> io::Result<()> {
             println!("{}", line.green());
         }
     }
-
-    println!();
-
-    // Body
-    let mut body_buf = String::new();
-    fs::File::open(body_file.path())?.read_to_string(&mut body_buf)?;
-    if show_body {
-        let truncated = if body_buf.len() > 1024 {
-            format!("{}{}", &body_buf[..1024], "...".cyan())
-        } else {
-            body_buf.clone()
-        };
-        println!("{}", truncated);
-    } else if save_body {
-        println!("{} stored in: {}", "Body".green(), body_file.path().display());
-    }
-
-    if !save_body {
-        let _ = fs::remove_file(body_file.path());
-    }
-
-    // Timing chart
-    print_timing_chart(&metrics, url.starts_with("https://"));
-
-    if show_speed {
-        println!("speed_download: {:.1} KiB/s, speed_upload: {:.1} KiB/s", metrics.speed_download / 1024.0, metrics.speed_upload / 1024.0 )
-    }
     Ok(())
+}
+
+fn print_connection_info(metrics: &CurlMetrics, show_ip: bool) {
+    if show_ip {
+        println!(
+            "{} {}:{}  ⇄  {}:{}",
+            "IP Info:".blue(),
+            metrics.local_ip,
+            metrics.local_port,
+            metrics.remote_ip,
+            metrics.remote_port
+        );
+    }
 }
 
 fn print_timing_chart(m: &CurlMetrics, https: bool) {
     let dns = (m.time_namelookup * 1000.0) as u64;
     let connect = (m.time_connect * 1000.0) as u64 - dns;
-    let ssl = (m.time_pretransfer * 1000.0) as u64 - dns - connect;
+    let ssl = if https {
+        (m.time_pretransfer * 1000.0) as u64 - dns - connect
+    } else {
+        0
+    };
     let server = (m.time_starttransfer * 1000.0) as u64 - dns - connect - ssl;
     let transfer = (m.time_total * 1000.0) as u64 - dns - connect - ssl - server;
 
@@ -179,44 +288,26 @@ fn print_timing_chart(m: &CurlMetrics, https: bool) {
         println!(
             r#"
   DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer
-[  {:>7}  |    {:>7}    |   {:>7}    |      {:>7}     |     {:>7}     ]
-"#,
-            format!("{}ms", dns).cyan(),
-            format!("{}ms", connect).cyan(),
-            format!("{}ms", ssl).cyan(),
-            format!("{}ms", server).cyan(),
-            format!("{}ms", transfer).cyan(),
+┌─────────────┬───────────────┬──────────────┬────────────────────┬─────────────────┐
+│ {:>11} │ {:>13} │ {:>12} │ {:>18} │ {:>15} │
+└─────────────┴───────────────┴──────────────┴────────────────────┴─────────────────┘"#,
+            format!("{dns}ms").cyan(),
+            format!("{connect}ms").cyan(),
+            format!("{ssl}ms").cyan(),
+            format!("{server}ms").cyan(),
+            format!("{transfer}ms").cyan()
         );
     } else {
         println!(
             r#"
   DNS Lookup   TCP Connection   Server Processing   Content Transfer
-[  {:>7}  |    {:>7}    |      {:>7}     |     {:>7}     ]
-"#,
-            format!("{}ms", dns).cyan(),
-            format!("{}ms", connect).cyan(),
-            format!("{}ms", server).cyan(),
-            format!("{}ms", transfer).cyan(),
+┌─────────────┬───────────────┬────────────────────┬─────────────────┐
+│ {:>11} │ {:>13} │ {:>18} │ {:>15} │
+└─────────────┴───────────────┴────────────────────┴─────────────────┘"#,
+            format!("{dns}ms").cyan(),
+            format!("{connect}ms").cyan(),
+            format!("{server}ms").cyan(),
+            format!("{transfer}ms").cyan()
         );
     }
-}
-
-fn print_help() {
-    println!(
-        "{}",
-        r#"
-Usage: httpstat URL [CURL_OPTIONS]
-Options:
-  -h, --help      Show this help.
-  --version       Show version.
-
-Env Options:
-  HTTPSTAT_SHOW_BODY=true       Show response body
-  HTTPSTAT_SHOW_IP=false        Disable IP info
-  HTTPSTAT_SHOW_SPEED=true      Show speed
-  HTTPSTAT_SAVE_BODY=false      Don't save body
-  HTTPSTAT_CURL_BIN=/my/curl    Use custom curl
-  HTTPSTAT_DEBUG=true           Enable debug log
-"#
-    );
 }
