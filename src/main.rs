@@ -289,7 +289,7 @@ fn print_timing_chart(m: &CurlMetrics, https: bool) {
             r#"
   DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer
 ┌─────────────┬───────────────┬──────────────┬────────────────────┬─────────────────┐
-│ {:>11} │ {:>13} │ {:>12} │ {:>18} │ {:>15} │
+│ {:^11} │ {:^13} │ {:^12} │ {:^18} │ {:^15} │
 └─────────────┴───────────────┴──────────────┴────────────────────┴─────────────────┘"#,
             format!("{dns}ms").cyan(),
             format!("{connect}ms").cyan(),
@@ -302,7 +302,7 @@ fn print_timing_chart(m: &CurlMetrics, https: bool) {
             r#"
   DNS Lookup   TCP Connection   Server Processing   Content Transfer
 ┌─────────────┬───────────────┬────────────────────┬─────────────────┐
-│ {:>11} │ {:>13} │ {:>18} │ {:>15} │
+│ {:^11} │ {:^13} │ {:^18} │ {:^15} │
 └─────────────┴───────────────┴────────────────────┴─────────────────┘"#,
             format!("{dns}ms").cyan(),
             format!("{connect}ms").cyan(),
