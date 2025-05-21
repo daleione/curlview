@@ -25,17 +25,31 @@ cargo install curlview
 curlview https://example.com [CURL_OPTIONS...]
 ```
 
-### Example:
+### Response example:
 
 ```bash
-httpstat https://example.com -H "Accept: application/json"
+IP Info: 192.168.130.49:59442  ⇄  17.253.144.10:80
+HTTP/1.1 301 Redirect
+Date: Tue, 20 May 2025 12:50:18 GMT
+Connection: close
+Via: http/1.1 hkhkg3-edge-bx-002.ts.apple.com (acdn/4.16219)
+Cache-Control: no-store
+Location: https://www.apple.com/
+Content-Type: text/html
+Content-Language: en
+X-Cache: none
+CDNUUID: f145d91d-b91a-4240-b285-54a2b6fb75d3-12423930046
+Content-Length: 304
 
-IP Info: 192.168.0.1:50512  ⇄  93.184.216.34:443
+Body stored in: /var/folders/9x/rgclv60j61q60xqnrz6flzw80000gn/T/.tmptMfYzA
 
-  DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer
-┌─────────────┬───────────────┬──────────────┬────────────────────┬─────────────────┐
-│   12ms      │     48ms      │     20ms     │        130ms       │      40ms       │
-└─────────────┴───────────────┴──────────────┴────────────────────┴─────────────────┘
+   DNS Lookup   TCP Connection   Server Processing   Content Transfer
+[     1ms     |      43ms      |       44ms        |       0ms        ]
+              |                |                   |                  |
+    namelookup:  1.49ms        |                   |                  |
+                        connect: 44.29ms           |                  |
+                                      starttransfer: 88.54ms          |
+                                                                 total: 88.77ms
 
 Download: 235.6 KiB/s, Upload: 0.0 KiB/s
 ```

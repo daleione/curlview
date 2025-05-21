@@ -290,11 +290,11 @@ fn print_timing_chart(m: &CurlMetrics, https: bool) {
   DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer
 [{:^12}|{:^16}|{:^15}|{:^19}|{:^18}]
              |                |               |                   |                  |
-   namelookup:{:>8}        |               |                   |                  |
-                       connect:{:>8}       |                   |                  |
-                                   pretransfer:{:>8}           |                  |
-                                                     starttransfer:{:>8}          |
-                                                                                total:{:>8}"#,
+   namelookup:{:<8}        |               |                   |                  |
+                       connect:{:<8}       |                   |                  |
+                                   pretransfer:{:<8}           |                  |
+                                                     starttransfer:{:<8}          |
+                                                                                total:{:<8}"#,
             format!("{dns}ms").cyan(),
             format!("{connect}ms").cyan(),
             format!("{ssl}ms").cyan(),
@@ -312,10 +312,10 @@ fn print_timing_chart(m: &CurlMetrics, https: bool) {
    DNS Lookup   TCP Connection   Server Processing   Content Transfer
 [{:^13}|{:^16}|{:^19}|{:^18}]
               |                |                   |                  |
-    namelookup:{:>8}        |                   |                  |
-                        connect:{:>8}           |                  |
-                                      starttransfer:{:>8}          |
-                                                                 total:{:>8}"#,
+    namelookup:{:<8}        |                   |                  |
+                        connect:{:<8}           |                  |
+                                      starttransfer:{:<8}          |
+                                                                 total:{:<8}"#,
             format!("{dns}ms").cyan(),
             format!("{connect}ms").cyan(),
             format!("{server}ms").cyan(),
