@@ -9,7 +9,9 @@ use std::time::Duration;
 use colored::*;
 
 use client::RequestConfig;
-use display::{print_body, print_connection_info, print_headers, print_speed, print_timing_chart};
+use display::{
+    print_body, print_connection_section, print_redirect_chain, print_response, print_timing_chart,
+};
 use metrics::DisplayMetrics;
 
 #[derive(Debug)]
@@ -19,6 +21,7 @@ struct Config {
     show_speed: bool,
     debug: bool,
     timeout_secs: u64,
+    follow_redirects: bool,
 }
 
 impl Config {
@@ -42,6 +45,7 @@ impl Config {
             show_speed: getenv_bool("HTTPSTAT_SHOW_SPEED", false),
             debug: getenv_bool("HTTPSTAT_DEBUG", false),
             timeout_secs: getenv_u64("HTTPSTAT_TIMEOUT", 10),
+            follow_redirects: getenv_bool("HTTPSTAT_FOLLOW_REDIRECTS", true),
         }
     }
 }
@@ -61,7 +65,7 @@ fn main() {
     };
     let extra_args = &args[2..];
 
-    let req_config = match parse_extra_args(extra_args, config.timeout_secs) {
+    let req_config = match parse_extra_args(extra_args, &config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{} {}", "Error:".red(), e);
@@ -71,11 +75,12 @@ fn main() {
 
     if config.debug {
         eprintln!(
-            "{} {} {} (timeout: {}s)",
+            "{} {} {} (timeout: {}s, follow_redirects: {})",
             "Request:".bright_blue(),
             req_config.method,
             url,
-            req_config.timeout.as_secs()
+            req_config.timeout.as_secs(),
+            req_config.follow_redirects,
         );
         for (k, v) in &req_config.headers {
             eprintln!("  {}: {}", k.bright_black(), v.cyan());
@@ -95,18 +100,34 @@ fn main() {
         .await;
 
         match result {
-            Ok(Ok((timing, response, ))) => {
-                let dm = DisplayMetrics::from(&timing);
-                let is_https = url.starts_with("https://");
+            Ok(Ok(r)) => {
+                let dm = DisplayMetrics::from(&r.timing);
+                let is_https = r.final_url.starts_with("https://");
 
-                print_connection_info(&dm, config.show_ip);
-                print_headers(&response);
-                print_body(&response.body, config.show_body);
+                // 1. Redirect chain (if any)
+                print_redirect_chain(
+                    &r.redirect_chain,
+                    &r.final_url,
+                    r.response.status.as_u16(),
+                );
+
+                // 2. Connection: IP + DNS + TLS in one block
+                print_connection_section(
+                    &dm,
+                    &r.timing.dns_info,
+                    r.timing.tls_info.as_ref(),
+                    config.show_ip,
+                );
+
+                // 3. Response headers + size summary
+                let speed_ref = if config.show_speed { Some(&dm) } else { None };
+                print_response(&r.response, &r.timing.size_info, speed_ref);
+
+                // 4. Response body (optional)
+                print_body(&r.response.body, config.show_body);
+
+                // 5. Timing waterfall chart
                 print_timing_chart(&dm, is_https);
-
-                if config.show_speed {
-                    print_speed(&dm);
-                }
             }
             Ok(Err(e)) => {
                 eprintln!("{} {}", "Error:".red(), e);
@@ -124,12 +145,10 @@ fn main() {
     });
 }
 
-fn parse_extra_args(
-    args: &[String],
-    timeout_secs: u64,
-) -> Result<RequestConfig, String> {
-    let mut config = RequestConfig {
-        timeout: Duration::from_secs(timeout_secs),
+fn parse_extra_args(args: &[String], config: &Config) -> Result<RequestConfig, String> {
+    let mut req = RequestConfig {
+        timeout: Duration::from_secs(config.timeout_secs),
+        follow_redirects: config.follow_redirects,
         ..Default::default()
     };
 
@@ -138,7 +157,7 @@ fn parse_extra_args(
         match args[i].as_str() {
             "-X" | "--request" => {
                 i += 1;
-                config.method = args
+                req.method = args
                     .get(i)
                     .ok_or("-X requires a method argument")?
                     .to_uppercase();
@@ -149,16 +168,15 @@ fn parse_extra_args(
                 let (key, value) = header
                     .split_once(':')
                     .ok_or(format!("Invalid header format: {}", header))?;
-                config
-                    .headers
+                req.headers
                     .push((key.trim().to_string(), value.trim().to_string()));
             }
             "-d" | "--data" => {
                 i += 1;
                 let data = args.get(i).ok_or("-d requires a data argument")?;
-                config.body = Some(data.as_bytes().to_vec());
-                if config.method == "GET" {
-                    config.method = "POST".to_string();
+                req.body = Some(data.as_bytes().to_vec());
+                if req.method == "GET" {
+                    req.method = "POST".to_string();
                 }
             }
             "--max-time" => {
@@ -168,7 +186,13 @@ fn parse_extra_args(
                     .ok_or("--max-time requires a value")?
                     .parse()
                     .map_err(|_| "Invalid --max-time value")?;
-                config.timeout = Duration::from_secs(secs);
+                req.timeout = Duration::from_secs(secs);
+            }
+            "-L" | "--location" => {
+                req.follow_redirects = true;
+            }
+            "--no-follow" => {
+                req.follow_redirects = false;
             }
             other => {
                 return Err(format!("Unknown option: {}", other));
@@ -177,7 +201,7 @@ fn parse_extra_args(
         i += 1;
     }
 
-    Ok(config)
+    Ok(req)
 }
 
 fn print_help() {
@@ -191,14 +215,17 @@ Options:
   -H, --header "K: V"    Add request header
   -d, --data DATA         Request body (auto-sets POST if GET)
   --max-time SECONDS      Request timeout
+  -L, --location          Follow redirects (default: on)
+  --no-follow             Disable redirect following
   -h, --help              Show this help
 
 Env Options:
-  HTTPSTAT_SHOW_BODY=true       Show response body
-  HTTPSTAT_SHOW_IP=false        Disable IP info
-  HTTPSTAT_SHOW_SPEED=true      Show speed
-  HTTPSTAT_DEBUG=true           Enable debug log
-  HTTPSTAT_TIMEOUT=10           Request timeout in seconds
+  HTTPSTAT_SHOW_BODY=true            Show response body
+  HTTPSTAT_SHOW_IP=false             Disable IP info
+  HTTPSTAT_SHOW_SPEED=true           Show speed
+  HTTPSTAT_FOLLOW_REDIRECTS=false    Disable redirect following
+  HTTPSTAT_DEBUG=true                Enable debug log
+  HTTPSTAT_TIMEOUT=10                Request timeout in seconds
 "#
         .bright_blue()
     );

@@ -1,7 +1,42 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+/// TLS connection details extracted after handshake.
+#[derive(Debug, Clone)]
+pub struct TlsInfo {
+    pub protocol_version: String,
+    pub cipher_suite: String,
+    pub cert_subject: String,
+    pub cert_issuer: String,
+    pub cert_not_after: Option<String>,
+    pub cert_days_remaining: Option<i64>,
+}
+
+/// DNS resolution details.
+#[derive(Debug, Clone)]
+pub struct DnsInfo {
+    pub resolved_ips: Vec<IpAddr>,
+}
+
+/// Response size and compression details.
+#[derive(Debug, Clone)]
+pub struct SizeInfo {
+    pub headers_size: usize,
+    pub body_size: usize,
+    pub content_encoding: Option<String>,
+    /// The Content-Length header value (compressed size on wire), if present.
+    pub content_length: Option<usize>,
+}
+
+/// A single hop in a redirect chain.
+#[derive(Debug)]
+pub struct RedirectHop {
+    pub url: String,
+    pub status: u16,
+    pub timing: TimingMetrics,
+}
 
 #[derive(Debug)]
 pub struct TimingMetrics {
@@ -15,6 +50,10 @@ pub struct TimingMetrics {
     pub remote_addr: SocketAddr,
 
     pub body_size: usize,
+
+    pub tls_info: Option<TlsInfo>,
+    pub dns_info: DnsInfo,
+    pub size_info: SizeInfo,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
