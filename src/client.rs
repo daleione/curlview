@@ -23,6 +23,7 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+#[derive(Debug)]
 pub struct RequestConfig {
     pub method: String,
     pub headers: Vec<(String, String)>,

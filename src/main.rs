@@ -16,145 +16,39 @@ use metrics::DisplayMetrics;
 
 #[derive(Debug)]
 struct Config {
+    url: String,
     show_body: bool,
     show_ip: bool,
     show_speed: bool,
     debug: bool,
-    timeout_secs: u64,
     follow_redirects: bool,
+    req: RequestConfig,
 }
 
-impl Config {
-    fn from_env() -> Self {
-        fn getenv_bool(key: &str, default: bool) -> bool {
-            env::var(key)
-                .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
-                .unwrap_or(default)
-        }
-
-        fn getenv_u64(key: &str, default: u64) -> u64 {
-            env::var(key)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(default)
-        }
-
-        Self {
-            show_body: getenv_bool("HTTPSTAT_SHOW_BODY", false),
-            show_ip: getenv_bool("HTTPSTAT_SHOW_IP", true),
-            show_speed: getenv_bool("HTTPSTAT_SHOW_SPEED", false),
-            debug: getenv_bool("HTTPSTAT_DEBUG", false),
-            timeout_secs: getenv_u64("HTTPSTAT_TIMEOUT", 10),
-            follow_redirects: getenv_bool("HTTPSTAT_FOLLOW_REDIRECTS", true),
-        }
-    }
-}
-
-fn main() {
+fn parse_args() -> Result<Config, String> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
         print_help();
-        return;
+        std::process::exit(0);
     }
 
-    let config = Config::from_env();
     let url = if args[1].contains("://") {
         args[1].clone()
     } else {
         format!("http://{}", args[1])
     };
-    let extra_args = &args[2..];
 
-    let req_config = match parse_extra_args(extra_args, &config) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{} {}", "Error:".red(), e);
-            std::process::exit(1);
-        }
-    };
+    let mut show_body = false;
+    let mut show_ip = true;
+    let mut show_speed = false;
+    let mut debug = false;
+    let mut follow_redirects = true;
+    let mut req = RequestConfig::default();
 
-    if config.debug {
-        eprintln!(
-            "{} {} {} (timeout: {}s, follow_redirects: {})",
-            "Request:".bright_blue(),
-            req_config.method,
-            url,
-            req_config.timeout.as_secs(),
-            req_config.follow_redirects,
-        );
-        for (k, v) in &req_config.headers {
-            eprintln!("  {}: {}", k.bright_black(), v.cyan());
-        }
-    }
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create tokio runtime");
-
-    rt.block_on(async {
-        let result = tokio::time::timeout(
-            req_config.timeout,
-            client::timed_request(&url, &req_config),
-        )
-        .await;
-
-        match result {
-            Ok(Ok(r)) => {
-                let dm = DisplayMetrics::from(&r.timing);
-                let is_https = r.final_url.starts_with("https://");
-
-                // 1. Redirect chain (if any)
-                print_redirect_chain(
-                    &r.redirect_chain,
-                    &r.final_url,
-                    r.response.status.as_u16(),
-                );
-
-                // 2. Connection: IP + DNS + TLS in one block
-                print_connection_section(
-                    &dm,
-                    &r.timing.dns_info,
-                    r.timing.tls_info.as_ref(),
-                    config.show_ip,
-                );
-
-                // 3. Response headers + size summary
-                let speed_ref = if config.show_speed { Some(&dm) } else { None };
-                print_response(&r.response, &r.timing.size_info, speed_ref);
-
-                // 4. Response body (optional)
-                print_body(&r.response.body, config.show_body);
-
-                // 5. Timing waterfall chart
-                print_timing_chart(&dm, is_https);
-            }
-            Ok(Err(e)) => {
-                eprintln!("{} {}", "Error:".red(), e);
-                std::process::exit(1);
-            }
-            Err(_) => {
-                eprintln!(
-                    "{} Request timed out after {}s",
-                    "Error:".red(),
-                    req_config.timeout.as_secs()
-                );
-                std::process::exit(1);
-            }
-        }
-    });
-}
-
-fn parse_extra_args(args: &[String], config: &Config) -> Result<RequestConfig, String> {
-    let mut req = RequestConfig {
-        timeout: Duration::from_secs(config.timeout_secs),
-        follow_redirects: config.follow_redirects,
-        ..Default::default()
-    };
-
-    let mut i = 0;
+    let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
+            // ── Request options ──
             "-X" | "--request" => {
                 i += 1;
                 req.method = args
@@ -179,21 +73,38 @@ fn parse_extra_args(args: &[String], config: &Config) -> Result<RequestConfig, S
                     req.method = "POST".to_string();
                 }
             }
-            "--max-time" => {
+            "--max-time" | "--timeout" | "-t" => {
                 i += 1;
                 let secs: u64 = args
                     .get(i)
                     .ok_or("--max-time requires a value")?
                     .parse()
-                    .map_err(|_| "Invalid --max-time value")?;
+                    .map_err(|_| "Invalid timeout value")?;
                 req.timeout = Duration::from_secs(secs);
             }
+
+            // ── Redirect ──
             "-L" | "--location" => {
-                req.follow_redirects = true;
+                follow_redirects = true;
             }
             "--no-follow" => {
-                req.follow_redirects = false;
+                follow_redirects = false;
             }
+
+            // ── Display options ──
+            "-b" | "--show-body" => {
+                show_body = true;
+            }
+            "-s" | "--show-speed" => {
+                show_speed = true;
+            }
+            "--no-ip" => {
+                show_ip = false;
+            }
+            "--debug" => {
+                debug = true;
+            }
+
             other => {
                 return Err(format!("Unknown option: {}", other));
             }
@@ -201,32 +112,121 @@ fn parse_extra_args(args: &[String], config: &Config) -> Result<RequestConfig, S
         i += 1;
     }
 
-    Ok(req)
+    req.follow_redirects = follow_redirects;
+
+    Ok(Config {
+        url,
+        show_body,
+        show_ip,
+        show_speed,
+        debug,
+        follow_redirects,
+        req,
+    })
+}
+
+fn main() {
+    let config = match parse_args() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red(), e);
+            std::process::exit(1);
+        }
+    };
+
+    if config.debug {
+        eprintln!(
+            "{} {} {} (timeout: {}s, follow_redirects: {})",
+            "Request:".bright_blue(),
+            config.req.method,
+            config.url,
+            config.req.timeout.as_secs(),
+            config.follow_redirects,
+        );
+        for (k, v) in &config.req.headers {
+            eprintln!("  {}: {}", k.bright_black(), v.cyan());
+        }
+    }
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
+
+    rt.block_on(async {
+        let result = tokio::time::timeout(
+            config.req.timeout,
+            client::timed_request(&config.url, &config.req),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(r)) => {
+                let dm = DisplayMetrics::from(&r.timing);
+                let is_https = r.final_url.starts_with("https://");
+
+                print_redirect_chain(
+                    &r.redirect_chain,
+                    &r.final_url,
+                    r.response.status.as_u16(),
+                );
+
+                print_connection_section(
+                    &dm,
+                    &r.timing.dns_info,
+                    r.timing.tls_info.as_ref(),
+                    config.show_ip,
+                );
+
+                let speed_ref = if config.show_speed { Some(&dm) } else { None };
+                print_response(&r.response, &r.timing.size_info, speed_ref);
+
+                print_body(&r.response.body, config.show_body);
+
+                print_timing_chart(&dm, is_https);
+            }
+            Ok(Err(e)) => {
+                eprintln!("{} {}", "Error:".red(), e);
+                std::process::exit(1);
+            }
+            Err(_) => {
+                eprintln!(
+                    "{} Request timed out after {}s",
+                    "Error:".red(),
+                    config.req.timeout.as_secs()
+                );
+                std::process::exit(1);
+            }
+        }
+    });
 }
 
 fn print_help() {
     println!(
-        "{}",
-        r#"
-Usage: curlview URL [OPTIONS]
-
-Options:
-  -X, --request METHOD    HTTP method (GET, POST, PUT, DELETE, ...)
-  -H, --header "K: V"    Add request header
-  -d, --data DATA         Request body (auto-sets POST if GET)
-  --max-time SECONDS      Request timeout
-  -L, --location          Follow redirects (default: on)
-  --no-follow             Disable redirect following
-  -h, --help              Show this help
-
-Env Options:
-  HTTPSTAT_SHOW_BODY=true            Show response body
-  HTTPSTAT_SHOW_IP=false             Disable IP info
-  HTTPSTAT_SHOW_SPEED=true           Show speed
-  HTTPSTAT_FOLLOW_REDIRECTS=false    Disable redirect following
-  HTTPSTAT_DEBUG=true                Enable debug log
-  HTTPSTAT_TIMEOUT=10                Request timeout in seconds
-"#
-        .bright_blue()
+        "{} curlview URL [OPTIONS]\n",
+        "Usage:".green().bold()
     );
+
+    println!("{}", "Request Options:".blue().bold());
+    print_opt("-X, --request METHOD", "HTTP method (GET, POST, PUT, DELETE, ...)");
+    print_opt("-H, --header \"K: V\"", "Add request header");
+    print_opt("-d, --data DATA", "Request body (auto-sets POST if GET)");
+    print_opt("-t, --timeout SECONDS", "Request timeout (default: 10)");
+
+    println!("\n{}", "Redirect Options:".blue().bold());
+    print_opt("-L, --location", "Follow redirects (default: on)");
+    print_opt("--no-follow", "Disable redirect following");
+
+    println!("\n{}", "Display Options:".blue().bold());
+    print_opt("-b, --show-body", "Show response body");
+    print_opt("-s, --show-speed", "Show download speed");
+    print_opt("--no-ip", "Hide connection IP info");
+    print_opt("--debug", "Print debug info");
+
+    println!();
+    print_opt("-h, --help", "Show this help");
+}
+
+fn print_opt(flag: &str, desc: &str) {
+    println!("  {:<24}{}", flag.cyan(), desc);
 }

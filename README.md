@@ -31,12 +31,22 @@ curlview URL [OPTIONS]
 ### Options
 
 ```
+Request Options:
   -X, --request METHOD    HTTP method (GET, POST, PUT, DELETE, ...)
   -H, --header "K: V"    Add request header
   -d, --data DATA         Request body (auto-sets POST if GET)
-  --max-time SECONDS      Request timeout
+  -t, --timeout SECONDS   Request timeout (default: 10)
+
+Redirect Options:
   -L, --location          Follow redirects (default: on)
   --no-follow             Disable redirect following
+
+Display Options:
+  -b, --show-body         Show response body
+  -s, --show-speed        Show download speed
+  --no-ip                 Hide connection IP info
+  --debug                 Print debug info
+
   -h, --help              Show this help
 ```
 
@@ -88,28 +98,20 @@ $ curlview https://apple.com
 curlview https://httpbin.org/post -X POST -d '{"key":"value"}' -H "Content-Type: application/json"
 
 # Show response body
-HTTPSTAT_SHOW_BODY=true curlview https://httpbin.org/get
+curlview https://httpbin.org/get -b
 
 # With speed info
-HTTPSTAT_SHOW_SPEED=true curlview https://example.com
+curlview https://example.com -s
 
 # Disable redirect following
 curlview http://example.com --no-follow
 
+# Hide IP info
+curlview https://example.com --no-ip
+
 # Custom timeout
-curlview https://example.com --max-time 30
+curlview https://example.com -t 30
 ```
-
-## Environment Variables
-
-| Variable                  | Description                      | Default |
-|---------------------------|----------------------------------|---------|
-| HTTPSTAT_SHOW_BODY        | Show response body in output     | false   |
-| HTTPSTAT_SHOW_IP          | Display local/remote IP info     | true    |
-| HTTPSTAT_SHOW_SPEED       | Show download speed              | false   |
-| HTTPSTAT_FOLLOW_REDIRECTS | Automatically follow redirects   | true    |
-| HTTPSTAT_DEBUG            | Print debug info                 | false   |
-| HTTPSTAT_TIMEOUT          | Request timeout in seconds       | 10      |
 
 ## License
 
