@@ -24,8 +24,20 @@ fn color_ms(ms: f64) -> ColoredString {
     }
 }
 
-fn color_phase_ms(ms: u64) -> ColoredString {
-    let text = format!("{}ms", ms);
+/// Pad text to width BEFORE colorizing, so ANSI codes don't break alignment.
+fn color_ms_padded(ms: f64, width: usize) -> ColoredString {
+    let text = format!("{:<width$}", format!("{:.2}ms", ms));
+    if ms < 100.0 {
+        text.green()
+    } else if ms < 500.0 {
+        text.yellow()
+    } else {
+        text.red()
+    }
+}
+
+fn color_phase_ms_padded(ms: u64, width: usize) -> ColoredString {
+    let text = format!("{:^width$}", format!("{}ms", ms));
     if ms < 100 {
         text.green()
     } else if ms < 500 {
@@ -208,47 +220,40 @@ pub fn print_timing_chart(m: &DisplayMetrics, https: bool) {
     let server = (m.time_starttransfer * 1000.0) as u64 - dns - connect - ssl;
     let transfer = (m.time_total * 1000.0) as u64 - dns - connect - ssl - server;
 
+    // HTTPS |'s at cols: 13, 30, 46, 66, 85
+    // HTTP  |'s at cols: 14, 31, 51, 70
     if https {
-        println!(
-            r#"
-  DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer
-[{:^12}|{:^16}|{:^15}|{:^19}|{:^18}]
-             |                |               |                   |                  |
-   namelookup:{:<8}        |               |                   |                  |
-                       connect:{:<8}       |                   |                  |
-                                   pretransfer:{:<8}           |                  |
-                                                     starttransfer:{:<8}          |
-                                                                                total:{:<8}"#,
-            color_phase_ms(dns),
-            color_phase_ms(connect),
-            color_phase_ms(ssl),
-            color_phase_ms(server),
-            color_phase_ms(transfer),
-            color_ms(m.time_namelookup * 1000.0),
-            color_ms(m.time_connect * 1000.0),
-            color_ms(m.time_pretransfer * 1000.0),
-            color_ms(m.time_starttransfer * 1000.0),
-            color_ms(m.time_total * 1000.0),
+        println!();
+        println!("  DNS Lookup   TCP Connection   TLS Handshake   Server Processing   Content Transfer");
+        println!("[{}|{}|{}|{}|{}]",
+            color_phase_ms_padded(dns, 12),
+            color_phase_ms_padded(connect, 16),
+            color_phase_ms_padded(ssl, 15),
+            color_phase_ms_padded(server, 19),
+            color_phase_ms_padded(transfer, 18),
         );
+        //         col:  0             13               30              46                  66                 85
+        println!("             |                |               |                   |                  |");
+        println!("   namelookup:{}|               |                   |                  |", color_ms_padded(m.time_namelookup * 1000.0, 16));
+        println!("                       connect:{}|                   |                  |", color_ms_padded(m.time_connect * 1000.0, 15));
+        println!("                                   pretransfer:{}|                  |", color_ms_padded(m.time_pretransfer * 1000.0, 19));
+        println!("                                                     starttransfer:{}|", color_ms_padded(m.time_starttransfer * 1000.0, 18));
+        println!("                                                                                total:{}", color_ms_padded(m.time_total * 1000.0, 8));
     } else {
-        println!(
-            r#"
-   DNS Lookup   TCP Connection   Server Processing   Content Transfer
-[{:^13}|{:^16}|{:^19}|{:^18}]
-              |                |                   |                  |
-    namelookup:{:<8}        |                   |                  |
-                        connect:{:<8}           |                  |
-                                      starttransfer:{:<8}          |
-                                                                 total:{:<8}"#,
-            color_phase_ms(dns),
-            color_phase_ms(connect),
-            color_phase_ms(server),
-            color_phase_ms(transfer),
-            color_ms(m.time_namelookup * 1000.0),
-            color_ms(m.time_connect * 1000.0),
-            color_ms(m.time_starttransfer * 1000.0),
-            color_ms(m.time_total * 1000.0),
+        println!();
+        println!("   DNS Lookup   TCP Connection   Server Processing   Content Transfer");
+        println!("[{}|{}|{}|{}]",
+            color_phase_ms_padded(dns, 13),
+            color_phase_ms_padded(connect, 16),
+            color_phase_ms_padded(server, 19),
+            color_phase_ms_padded(transfer, 18),
         );
+        //         col:  0              14               31                  51                 70
+        println!("              |                |                   |                  |");
+        println!("    namelookup:{}|                   |                  |", color_ms_padded(m.time_namelookup * 1000.0, 16));
+        println!("                        connect:{}|                  |", color_ms_padded(m.time_connect * 1000.0, 19));
+        println!("                                      starttransfer:{}|", color_ms_padded(m.time_starttransfer * 1000.0, 18));
+        println!("                                                                 total:{}", color_ms_padded(m.time_total * 1000.0, 8));
     }
 }
 
