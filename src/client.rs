@@ -13,6 +13,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use url::Url;
 
+use crate::error::RequestError;
 use crate::io::MaybeHttpsStream;
 use crate::metrics::{DnsInfo, RedirectHop, SizeInfo, TimingMetrics, TlsInfo};
 
@@ -58,7 +59,7 @@ pub struct RequestResult {
 pub async fn timed_request(
     url_str: &str,
     config: &RequestConfig,
-) -> Result<RequestResult, Box<dyn std::error::Error>> {
+) -> Result<RequestResult, RequestError> {
     let mut current_url = url_str.to_string();
     let mut redirect_chain: Vec<RedirectHop> = Vec::new();
 
@@ -73,14 +74,17 @@ pub async fn timed_request(
                 .headers
                 .get("location")
                 .and_then(|v| v.to_str().ok())
-                .ok_or("Redirect without Location header")?;
+                .ok_or_else(|| RequestError::Http("redirect without Location header".into()))?;
 
             // Resolve relative redirects against current URL
             let next_url = if location.contains("://") {
                 location.to_string()
             } else {
-                let base = Url::parse(&current_url)?;
-                base.join(location)?.to_string()
+                let base = Url::parse(&current_url)
+                    .map_err(|e| RequestError::InvalidUrl(e.to_string()))?;
+                base.join(location)
+                    .map_err(|e| RequestError::InvalidUrl(e.to_string()))?
+                    .to_string()
             };
 
             redirect_chain.push(RedirectHop {
@@ -106,18 +110,37 @@ pub async fn timed_request(
 async fn single_request(
     url_str: &str,
     config: &RequestConfig,
-) -> Result<(TimingMetrics, HttpResponse), Box<dyn std::error::Error>> {
-    let url = Url::parse(url_str)?;
-    let host = url.host_str().ok_or("URL missing host")?.to_string();
-    let port = url.port_or_known_default().ok_or("Unknown port")?;
+) -> Result<(TimingMetrics, HttpResponse), RequestError> {
+    let url = Url::parse(url_str).map_err(|e| RequestError::InvalidUrl(e.to_string()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| RequestError::InvalidUrl("URL is missing a host".into()))?
+        .to_string();
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| RequestError::InvalidUrl("URL has an unknown port".into()))?;
     let is_https = url.scheme() == "https";
     let epoch = Instant::now();
 
     // ── Phase 1: DNS Resolve ──
-    let resolver = TokioResolver::builder_tokio()?.build();
-    let lookup = resolver.lookup_ip(host.as_str()).await?;
+    let resolver = TokioResolver::builder_tokio()
+        .map_err(|e| RequestError::Dns {
+            host: host.clone(),
+            detail: e.to_string(),
+        })?
+        .build();
+    let lookup = resolver
+        .lookup_ip(host.as_str())
+        .await
+        .map_err(|e| RequestError::Dns {
+            host: host.clone(),
+            detail: e.to_string(),
+        })?;
     let all_ips: Vec<std::net::IpAddr> = lookup.iter().collect();
-    let remote_ip = *all_ips.first().ok_or("DNS lookup returned no addresses")?;
+    let remote_ip = *all_ips.first().ok_or_else(|| RequestError::Dns {
+        host: host.clone(),
+        detail: "DNS lookup returned no addresses".into(),
+    })?;
     let t_namelookup = epoch.elapsed();
 
     let dns_info = DnsInfo {
@@ -126,8 +149,16 @@ async fn single_request(
 
     // ── Phase 2: TCP Connect ──
     let remote_addr = SocketAddr::new(remote_ip, port);
-    let tcp_stream = TcpStream::connect(remote_addr).await?;
-    let local_addr = tcp_stream.local_addr()?;
+    let tcp_stream = TcpStream::connect(remote_addr)
+        .await
+        .map_err(|e| RequestError::Connect {
+            addr: remote_addr.to_string(),
+            detail: e.to_string(),
+        })?;
+    let local_addr = tcp_stream.local_addr().map_err(|e| RequestError::Connect {
+        addr: remote_addr.to_string(),
+        detail: e.to_string(),
+    })?;
     let t_connect = epoch.elapsed();
 
     // ── Phase 3: TLS Handshake (HTTPS only) ──
@@ -138,8 +169,18 @@ async fn single_request(
             .with_root_certificates(root_store)
             .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(tls_config));
-        let server_name = ServerName::try_from(host.clone())?;
-        let tls_stream = connector.connect(server_name, tcp_stream).await?;
+        let server_name = ServerName::try_from(host.clone()).map_err(|e| RequestError::Tls {
+            host: host.clone(),
+            detail: e.to_string(),
+        })?;
+        let tls_stream =
+            connector
+                .connect(server_name, tcp_stream)
+                .await
+                .map_err(|e| RequestError::Tls {
+                    host: host.clone(),
+                    detail: e.to_string(),
+                })?;
         let t = epoch.elapsed();
 
         let info = extract_tls_info(&tls_stream);
@@ -155,7 +196,9 @@ async fn single_request(
 
     // ── Phase 4 & 5: HTTP Request + Wait for first byte ──
     let io = TokioIo::new(stream);
-    let (mut sender, conn) = http1::handshake(io).await?;
+    let (mut sender, conn) = http1::handshake(io)
+        .await
+        .map_err(|e| RequestError::Http(e.to_string()))?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
             eprintln!("Connection error: {}", e);
@@ -168,7 +211,10 @@ async fn single_request(
         url.path().to_string()
     };
 
-    let method: http::Method = config.method.parse()?;
+    let method: http::Method = config
+        .method
+        .parse()
+        .map_err(|_| RequestError::Http(format!("invalid HTTP method: {}", config.method)))?;
     let mut builder = http::Request::builder()
         .method(method)
         .uri(&path)
@@ -184,7 +230,13 @@ async fn single_request(
         None => Full::new(Bytes::new()),
     };
 
-    let response = sender.send_request(builder.body(req_body)?).await?;
+    let request = builder
+        .body(req_body)
+        .map_err(|e| RequestError::Http(e.to_string()))?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|e| RequestError::Http(e.to_string()))?;
     let t_starttransfer = epoch.elapsed();
 
     // ── Phase 6: Read Body ──
@@ -212,7 +264,13 @@ async fn single_request(
         status_line.len() + header_lines + 2 // trailing \r\n
     };
 
-    let body_bytes = response.into_body().collect().await?.to_bytes().to_vec();
+    let body_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| RequestError::Http(e.to_string()))?
+        .to_bytes()
+        .to_vec();
     let t_total = epoch.elapsed();
 
     let size_info = SizeInfo {

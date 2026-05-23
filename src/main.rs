@@ -1,5 +1,6 @@
 mod client;
 mod display;
+mod error;
 mod io;
 mod metrics;
 
@@ -186,7 +187,13 @@ fn main() {
                 print_timing_chart(&dm, is_https);
             }
             Ok(Err(e)) => {
-                eprintln!("{} {}", "Error:".red(), e);
+                eprintln!("{} {}", format!("{:>7}", "Error:").red().bold(), e);
+                if let Some(hint) = e.hint() {
+                    eprintln!("{} {}", format!("{:>7}", "Hint:").cyan().bold(), hint.bright_black());
+                }
+                if config.debug {
+                    eprintln!("{} {}", format!("{:>7}", "Detail:").bright_black(), e.detail().bright_black());
+                }
                 std::process::exit(1);
             }
             Err(_) => {
